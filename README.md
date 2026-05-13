@@ -32,6 +32,15 @@ You can find an example of a small speedhack program using MinSpeedhack in `exam
 
     // Get speedhack speed
     double speed = MS::GetSpeed();
+
+    // By default, all modules are affected by the speedhack.
+
+    // Whitelist specific modules - once any module is included,
+    // only included modules will be affected (excludelist is ignored).
+    MS::IncludeModule(GetModuleHandleW(L"eldenring.exe"));
+
+    // Blacklist specific modules - only used when no modules are included.
+    MS::ExcludeModule(GetModuleHandleW(L"graphics-hook64.dll")); // e.g. exclude OBS game capture
 ```
 
 ## Build
