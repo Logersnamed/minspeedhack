@@ -8,6 +8,9 @@ namespace MS {
         void** original;
     };
 
+    void IncludeModule(HMODULE module);
+    void ExcludeModule(HMODULE module);
+
     void SetSpeed(double value);
     double GetSpeed();
 

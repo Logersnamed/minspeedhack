@@ -1,4 +1,5 @@
 #include "MinSpeedhack.h"
+#include <intrin.h>
 
 namespace MS {
     static double speed = 1.0;
@@ -15,8 +16,75 @@ namespace MS {
     static ULONGLONG(WINAPI* origGetTickCount64)();
     static BOOL(WINAPI* origQPC)(LARGE_INTEGER*);
 
+    static constexpr size_t MAX_MODULES = 16;
+    static constexpr size_t MAX_CACHE = 32;
+
+    static size_t excludedCount = 0;
+    static HMODULE excludedModules[MAX_MODULES]{};
+
+    static size_t includedCount = 0;
+    static HMODULE includedModules[MAX_MODULES]{};
+
+    struct CallerCache {
+        void* address;
+        bool shouldHack;
+    };
+
+    static size_t cacheCount = 0;
+    static CallerCache cache[MAX_CACHE]{};
+
+    void ExcludeModule(HMODULE module) {
+        if (excludedCount < MAX_MODULES)
+            excludedModules[excludedCount++] = module;
+    }
+
+    void IncludeModule(HMODULE module) {
+        if (includedCount < MAX_MODULES)
+            includedModules[includedCount++] = module;
+    }
+
+    bool ShouldSpeedhack(void* address) {
+        if (!excludedCount && !includedCount) return true;
+
+        for (size_t i = 0; i < cacheCount; ++i) {
+            if (cache[i].address == address) {
+                return cache[i].shouldHack;
+            }
+        }
+
+        HMODULE callerModule;
+        constexpr DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+        if (!GetModuleHandleExW(flags, reinterpret_cast<LPCWSTR>(address), &callerModule)) return false;
+
+        bool result = false;
+        if (includedCount) {
+            for (size_t i = 0; i < includedCount; ++i) {
+                if (includedModules[i] == callerModule) {
+                    result = true;
+                    break;
+                }
+            }
+        }
+        else {
+            result = true;
+            for (size_t i = 0; i < excludedCount; ++i) {
+                if (excludedModules[i] == callerModule) {
+                    result = false;
+                    break;
+                }
+            }
+        }
+
+        if (cacheCount < MAX_CACHE) {
+            cache[cacheCount++] = { address, result };
+        }
+
+        return result;
+    }
+
     static DWORD WINAPI hkGetTickCount() {
-        DWORD now = origGetTickCount();
+        const DWORD now = origGetTickCount();
+        if (!ShouldSpeedhack(_ReturnAddress())) return now;
 
         if (!base32) {
             base32 = now;
@@ -24,15 +92,15 @@ namespace MS {
             return now;
         }
 
-        DWORD delta = now - last32;
+        elapsed32 += (now - last32) * speed;
         last32 = now;
 
-        elapsed32 += delta * speed;
-        return base32 + (DWORD)elapsed32;
+        return base32 + static_cast<DWORD>(elapsed32);
     }
 
     static ULONGLONG WINAPI hkGetTickCount64() {
-        ULONGLONG now = origGetTickCount64();
+        const ULONGLONG now = origGetTickCount64();
+        if (!ShouldSpeedhack(_ReturnAddress())) return now;
 
         if (!base64) {
             base64 = now;
@@ -40,41 +108,43 @@ namespace MS {
             return now;
         }
 
-        ULONGLONG delta = now - last64;
+        elapsed64 += (now - last64) * speed;
         last64 = now;
 
-        elapsed64 += delta * speed;
-        return base64 + (ULONGLONG)elapsed64;
+        return base64 + static_cast<ULONGLONG>(elapsed64);
     }
 
     static BOOL WINAPI hkQueryPerformanceCounter(LARGE_INTEGER* lp) {
         LARGE_INTEGER now;
-        BOOL r = origQPC(&now);
+        const BOOL result = origQPC(&now);
+        if (!ShouldSpeedhack(_ReturnAddress())) {
+            *lp = now;
+            return result;
+        }
 
         if (!baseQpc.QuadPart) {
             baseQpc = now;
             lastQpc = now;
             *lp = now;
-            return r;
+            return result;
         }
 
-        LONGLONG delta = now.QuadPart - lastQpc.QuadPart;
+        elapsedQpc += (now.QuadPart - lastQpc.QuadPart) * speed;
         lastQpc = now;
 
-        elapsedQpc += delta * speed;
-        lp->QuadPart = baseQpc.QuadPart + (LONGLONG)elapsedQpc;
+        lp->QuadPart = baseQpc.QuadPart + static_cast<LONGLONG>(elapsedQpc);
 
-        return r;
+        return result;
     }
 
-    static Hook hooks[3] = {
+    static Hook hooks[] = {
         { (void*)&GetTickCount, (void*)&hkGetTickCount, (void**)&origGetTickCount },
         { (void*)&GetTickCount64, (void*)&hkGetTickCount64, (void**)&origGetTickCount64 },
         { (void*)&QueryPerformanceCounter, (void*)&hkQueryPerformanceCounter, (void**)&origQPC },
     };
 
     void SetSpeed(double value) {
-        speed = value;
+        speed = (value > 0.00001) ? value : 0.00001;
     }
 
     double GetSpeed() {
@@ -82,8 +152,7 @@ namespace MS {
     }
 
     const Hook* GetHooks(size_t& count) {
-        count = 3;
+        count = _countof(hooks);
         return hooks;
     }
-
 }
